@@ -13,21 +13,79 @@ public static class SeriesCalculator
             throw new ArgumentOutOfRangeException(nameof(selection), "Choose at least one period.");
 
         var metric = data.GetMetric(selection.Metric);
-        if (metric.IsCalculated)
-            throw new NotSupportedException($"{metric.DisplayName} is not supported yet.");
-
-        var totals = MonthlyTotals(Filter(data, metric.Code, selection.Segment, selection.Country), data.Periods.Count);
-        var aggregation = AggregationRules.For(metric.Code);
 
         // The chart always ends at the latest month; asking for more periods than exist shows them all.
         var buckets = Buckets(data.Periods, selection.Frequency);
-        var points = buckets
-            .Skip(Math.Max(0, buckets.Count - selection.PeriodCount))
-            .Select(b => new SeriesPoint(b.Label, Aggregate(totals, b, aggregation), b.Notes))
-            .ToList();
+        var shown = buckets.Skip(Math.Max(0, buckets.Count - selection.PeriodCount)).ToList();
+
+        var points = metric.IsCalculated
+            ? RatioPoints(data, selection, metric, shown)
+            : AmountPoints(data, selection, metric, shown);
 
         return new SeriesResult(selection, metric, points);
     }
+
+    private static List<SeriesPoint> AmountPoints(FinancialData data, Selection selection, MetricInfo metric, IReadOnlyList<Bucket> buckets)
+    {
+        var totals = MonthlyTotals(Filter(data, metric.Code, selection.Segment, selection.Country), data.Periods.Count);
+        var aggregation = AggregationRules.For(metric.Code);
+
+        return buckets
+            .Select(b => new SeriesPoint(b.Label, Aggregate(totals, b, aggregation), b.Notes))
+            .ToList();
+    }
+
+    /// <summary>
+    /// A percent metric calculated from two others, e.g. Cost-to-income % = Expenses / Revenue.
+    /// For one segment it is the ratio of that segment's totals over the period.
+    /// For "All" segments it is the simple average of each segment's ratio: this is what worked example E4
+    /// requires (the ratio of the combined totals gives 53.3% for Q3 24, not 57.0%).
+    /// Countries within a segment are added together before the ratio is taken.
+    /// </summary>
+    private static List<SeriesPoint> RatioPoints(FinancialData data, Selection selection, MetricInfo metric, IReadOnlyList<Bucket> buckets)
+    {
+        if (metric.CalculatedFrom.Count != 2)
+            throw new NotSupportedException($"{metric.DisplayName} must be calculated from exactly two metrics.");
+
+        var numeratorCode = metric.CalculatedFrom[0];
+        var denominatorCode = metric.CalculatedFrom[1];
+
+        IReadOnlyList<string> segments = selection.Segment == Selection.All ? data.Segments : [selection.Segment];
+
+        // Monthly numerator and denominator totals for each segment that has both in the chosen country.
+        var perSegment = new List<(decimal?[] Numerator, decimal?[] Denominator)>();
+        foreach (var segment in segments)
+        {
+            var numeratorRows = Rows(data, numeratorCode, segment, selection.Country);
+            var denominatorRows = Rows(data, denominatorCode, segment, selection.Country);
+            if (numeratorRows.Count == 0 || denominatorRows.Count == 0)
+                continue;
+
+            perSegment.Add((MonthlyTotals(numeratorRows, data.Periods.Count), MonthlyTotals(denominatorRows, data.Periods.Count)));
+        }
+
+        if (perSegment.Count == 0)
+            throw new ArgumentException(
+                $"There is no {numeratorCode} and {denominatorCode} data for segment '{selection.Segment}' and country '{selection.Country}'.");
+
+        return buckets
+            .Select(b =>
+            {
+                var ratios = perSegment
+                    .Select(s => Ratio(Aggregate(s.Numerator, b, Aggregation.Sum), Aggregate(s.Denominator, b, Aggregation.Sum)))
+                    .Where(r => r.HasValue)
+                    .Select(r => r!.Value)
+                    .ToList();
+
+                decimal? value = ratios.Count > 0 ? ratios.Average() : null;
+                return new SeriesPoint(b.Label, value, b.Notes);
+            })
+            .ToList();
+    }
+
+    /// <summary>Numerator / denominator as a percent; null when either is missing or the denominator is not positive.</summary>
+    private static decimal? Ratio(decimal? numerator, decimal? denominator) =>
+        numerator is decimal n && denominator is decimal d && d > 0 ? n / d * 100m : null;
 
     /// <summary>
     /// One chart period: its label and the month indexes (into <see cref="FinancialData.Periods"/>) it covers.
@@ -63,15 +121,17 @@ public static class SeriesCalculator
     /// </summary>
     internal static IReadOnlyList<FinancialRecord> Filter(FinancialData data, string metric, string segment, string country)
     {
-        var rows = data.Records
-            .Where(r => Matches(r.Metric, metric) && Matches(r.Segment, segment) && Matches(r.Country, country))
-            .ToList();
-
+        var rows = Rows(data, metric, segment, country);
         if (rows.Count == 0)
             throw new ArgumentException($"There is no {metric} data for segment '{segment}' and country '{country}'.");
 
         return rows;
     }
+
+    private static List<FinancialRecord> Rows(FinancialData data, string metric, string segment, string country) =>
+        data.Records
+            .Where(r => Matches(r.Metric, metric) && Matches(r.Segment, segment) && Matches(r.Country, country))
+            .ToList();
 
     /// <summary>
     /// Adds the rows together month by month. A month where every row is blank stays null.
