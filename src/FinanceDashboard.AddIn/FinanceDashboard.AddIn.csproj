@@ -5,6 +5,8 @@
 		<LangVersion>latest</LangVersion>
 		<ImplicitUsings>enable</ImplicitUsings>
 		<Nullable>enable</Nullable>
+		<!-- Keep our own launchSettings.json (F5 also opens Financials.xlsx) instead of Excel-DNA regenerating it -->
+		<RunExcelDnaSetDebuggerOptions>false</RunExcelDnaSetDebuggerOptions>
 	</PropertyGroup>
 
 	<ItemGroup>
@@ -14,6 +16,14 @@
 	<ItemGroup>
 	  <PackageReference Include="ExcelDna.AddIn" Version="1.9.0" />
 	  <PackageReference Include="ExcelDna.Interop" Version="16.0.0" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<Reference Include="System.Windows.Forms" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<None Include="..\..\data\Financials.xlsx" Link="Financials.xlsx" CopyToOutputDirectory="PreserveNewest" />
 	</ItemGroup>
 
 </Project>
