@@ -6,9 +6,12 @@ using Microsoft.Office.Interop.Excel;
 namespace FinanceDashboard.AddIn;
 
 /// <summary>
-/// Draws a <see cref="SeriesResult"/> on the Dashboard sheet: a small table of the numbers and one chart built from it.
-/// Only the Dashboard sheet is written to; Financials and Metrics are never touched.
+/// Draws a <see cref="DashboardView"/> on the Dashboard sheet: a table of the numbers, headline tiles and one chart
+/// built from the table. Only the Dashboard sheet is written to; Financials and Metrics are never touched.
 /// </summary>
+/// <remarks>
+/// Layout: table from column A (Period, Value, one column per breakdown part, Note); tiles and chart to its right.
+/// </remarks>
 internal static class DashboardRenderer
 {
     private const string SheetName = "Dashboard";
@@ -24,7 +27,7 @@ internal static class DashboardRenderer
     private const int Red = 0x2C2CC0;     // RGB(192, 44, 44): bad news
     private const int Grey = 0x707070;
 
-    public static void Render(Workbook workbook, SeriesResult result, KpiSummary kpis)
+    public static void Render(Workbook workbook, DashboardView view)
     {
         var app = workbook.Application;
         var screenUpdating = app.ScreenUpdating;
@@ -33,10 +36,14 @@ internal static class DashboardRenderer
         {
             var sheet = GetOrCreateSheet(workbook);
             HideCfoNote(sheet);
-            var valueFormat = result.Metric.IsPercent ? "0.0\"%\"" : "#,##0";
-            var lastRow = WriteTable(sheet, result, valueFormat);
-            WriteKpis(sheet, kpis);
-            DrawChart(sheet, result, valueFormat, lastRow);
+
+            var layout = new Layout(view.Parts.Count, view.Series.Points.Count);
+            var valueFormat = view.Series.Metric.IsPercent ? "0.0\"%\"" : "#,##0";
+
+            sheet.Cells.Clear();
+            WriteTable(sheet, view, layout, valueFormat);
+            WriteKpis(sheet, view.Kpis, layout);
+            DrawChart(sheet, view, layout, valueFormat);
         }
         finally
         {
@@ -44,13 +51,47 @@ internal static class DashboardRenderer
         }
     }
 
-    internal static string Title(SeriesResult result)
+    /// <summary>Where everything goes; the table grows one column per breakdown part.</summary>
+    private sealed class Layout(int partCount, int pointCount)
     {
-        var s = result.Selection;
+        public const int PeriodColumn = 1;
+        public const int ValueColumn = 2;
+        public int PartColumn(int part) => 3 + part;
+        public int NoteColumn => 3 + partCount;
+        public int TileColumn => NoteColumn + 2;
+        public int FirstDataRow => HeaderRow + 1;
+        public int LastRow => HeaderRow + pointCount;
+
+        public string Column(int column, int fromRow, int toRow) =>
+            $"{Letter(column)}{fromRow}:{Letter(column)}{toRow}";
+
+        public string DataColumn(int column) => Column(column, FirstDataRow, LastRow);
+    }
+
+    internal static string Title(DashboardView view)
+    {
+        var s = view.Series.Selection;
         var segment = s.Segment == Selection.All ? "All segments" : s.Segment;
         var country = s.Country == Selection.All ? "All countries" : s.Country;
-        return $"{result.Metric.DisplayName} · {segment} · {country} · {s.Frequency}";
+        var title = $"{view.Series.Metric.DisplayName} · {segment} · {country} · {s.Frequency}";
+        return view.BreakdownBy switch
+        {
+            Breakdown.Segment => title + " · by segment",
+            Breakdown.Country => title + " · by country",
+            _ => title
+        };
     }
+
+    private static string PartName(DashboardView view, SeriesResult part) =>
+        view.BreakdownBy == Breakdown.Country ? part.Selection.Country : part.Selection.Segment;
+
+    private static string TotalName(DashboardView view) => view.BreakdownBy switch
+    {
+        Breakdown.None => "Value",
+        _ when !view.Series.Metric.IsPercent => "Total",
+        Breakdown.Segment => "All segments",
+        _ => "All countries"
+    };
 
     private static Worksheet GetOrCreateSheet(Workbook workbook)
     {
@@ -78,41 +119,45 @@ internal static class DashboardRenderer
         }
     }
 
-    /// <summary>Writes title, unit line and the Period / Value / Note table. Returns the last table row.</summary>
-    private static int WriteTable(Worksheet sheet, SeriesResult result, string valueFormat)
+    /// <summary>Writes title, unit line and the table.</summary>
+    private static void WriteTable(Worksheet sheet, DashboardView view, Layout layout, string valueFormat)
     {
-        var points = result.Points;
-        var unit = result.Metric.IsPercent ? "Percent" : "USD thousands";
+        var points = view.Series.Points;
+        var unit = view.Series.Metric.IsPercent ? "Percent" : "USD thousands";
         var warnings = points.Count(p => !p.IsComplete);
 
-        sheet.Range["A:C"].Clear();
-
-        sheet.Range["A1"].Value2 = Title(result);
-        sheet.Range["A1"].Font.Bold = true;
-        sheet.Range["A1"].Font.Size = 14;
-        sheet.Range["A1"].Font.Color = BrandDark;
+        var title = sheet.Range["A1"];
+        title.Value2 = Title(view);
+        title.Font.Bold = true;
+        title.Font.Size = 14;
+        title.Font.Color = BrandDark;
         sheet.Range["A2"].Value2 = warnings == 0
             ? unit
             : $"{unit} · ⚠ {warnings} period(s) have missing data, see Note";
 
         // Labels such as "Jan 25" would be turned into dates by Excel, so the column is formatted as text first.
-        var lastRow = HeaderRow + points.Count;
-        sheet.Range[$"A{HeaderRow}:A{lastRow}"].NumberFormat = "@";
-        sheet.Range[$"B{HeaderRow + 1}:B{lastRow}"].NumberFormat = valueFormat;
+        sheet.Range[layout.Column(Layout.PeriodColumn, HeaderRow, layout.LastRow)].NumberFormat = "@";
+        sheet.Range[$"{Letter(Layout.ValueColumn)}{layout.FirstDataRow}:{Letter(layout.NoteColumn - 1)}{layout.LastRow}"]
+            .NumberFormat = valueFormat;
 
-        var cells = new object?[points.Count + 1, 3];
-        cells[0, 0] = "Period";
-        cells[0, 1] = "Value";
-        cells[0, 2] = "Note";
+        var cells = new object?[points.Count + 1, layout.NoteColumn];
+        cells[0, Layout.PeriodColumn - 1] = "Period";
+        cells[0, Layout.ValueColumn - 1] = TotalName(view);
+        cells[0, layout.NoteColumn - 1] = "Note";
+        for (var p = 0; p < view.Parts.Count; p++)
+            cells[0, layout.PartColumn(p) - 1] = PartName(view, view.Parts[p]);
+
         for (var i = 0; i < points.Count; i++)
         {
-            cells[i + 1, 0] = points[i].Label;
-            cells[i + 1, 1] = points[i].Value is decimal v ? (double)v : null;
-            cells[i + 1, 2] = points[i].IsComplete ? null : string.Join(" ", points[i].Notes);
+            cells[i + 1, Layout.PeriodColumn - 1] = points[i].Label;
+            cells[i + 1, Layout.ValueColumn - 1] = ToCell(points[i].Value);
+            cells[i + 1, layout.NoteColumn - 1] = points[i].IsComplete ? null : string.Join(" ", points[i].Notes);
+            for (var p = 0; p < view.Parts.Count; p++)
+                cells[i + 1, layout.PartColumn(p) - 1] = ToCell(view.Parts[p].Points[i].Value);
         }
-        sheet.Range[$"A{HeaderRow}:C{lastRow}"].Value2 = cells;
+        sheet.Range[$"A{HeaderRow}:{Letter(layout.NoteColumn)}{layout.LastRow}"].Value2 = cells;
 
-        var header = sheet.Range[$"A{HeaderRow}:C{HeaderRow}"];
+        var header = sheet.Range[$"A{HeaderRow}:{Letter(layout.NoteColumn)}{HeaderRow}"];
         header.Font.Bold = true;
         header.Font.Color = BrandDark;
         header.Interior.Color = BrandLight;
@@ -122,69 +167,69 @@ internal static class DashboardRenderer
         for (var i = 0; i < points.Count; i++)
         {
             if (!points[i].IsComplete)
-                sheet.Range[$"A{HeaderRow + 1 + i}:C{HeaderRow + 1 + i}"].Font.Color = Orange;
+                sheet.Range[$"A{layout.FirstDataRow + i}:{Letter(layout.NoteColumn)}{layout.FirstDataRow + i}"].Font.Color = Orange;
         }
 
         // The latest period is the one the CFO's office discusses first.
-        var latestRow = sheet.Range[$"A{lastRow}:B{lastRow}"];
+        var latestRow = sheet.Range[$"A{layout.LastRow}:{Letter(layout.NoteColumn - 1)}{layout.LastRow}"];
         latestRow.Font.Bold = true;
         latestRow.Interior.Color = BrandLight;
 
-        ((Range)sheet.Columns["A"]).ColumnWidth = 10;
-        ((Range)sheet.Columns["B"]).ColumnWidth = 14;
-        ((Range)sheet.Columns["C"]).ColumnWidth = 12;
-        return lastRow;
+        ((Range)sheet.Columns[Layout.PeriodColumn]).ColumnWidth = 10;
+        ((Range)sheet.Columns[Layout.ValueColumn]).ColumnWidth = 14;
+        for (var p = 0; p < view.Parts.Count; p++)
+            ((Range)sheet.Columns[layout.PartColumn(p)]).ColumnWidth = 12;
+        ((Range)sheet.Columns[layout.NoteColumn]).ColumnWidth = 12;
+        sheet.Range[$"{Letter(layout.NoteColumn + 1)}:{Letter(layout.TileColumn + 12)}"].ColumnWidth = sheet.StandardWidth;
     }
+
+    private static object? ToCell(decimal? value) => value is decimal v ? (double)v : null;
 
     /// <summary>
     /// Three headline tiles above the chart: latest value, change on the previous period, change on last year.
     /// A change is green when it is good news for that metric (a fall in expenses is green).
     /// </summary>
-    private static void WriteKpis(Worksheet sheet, KpiSummary kpis)
+    private static void WriteKpis(Worksheet sheet, KpiSummary kpis, Layout layout)
     {
-        var area = sheet.Range["E1:M3"];
-        area.Clear();
+        var first = layout.TileColumn;
         // Values such as "+3.4%" would be turned into numbers by Excel, so the tiles are text.
-        area.NumberFormat = "@";
+        sheet.Range[$"{Letter(first)}1:{Letter(first + 8)}3"].NumberFormat = "@";
 
-        Tile(sheet, KpiColumns[0], $"Latest · {kpis.LatestLabel}", DashboardPane.Format(kpis.Latest, kpis.IsPercent), BrandDark);
-        ComparisonTile(sheet, KpiColumns[1], "vs", kpis.PreviousPeriod, kpis);
-        ComparisonTile(sheet, KpiColumns[2], "vs", kpis.SamePeriodLastYear, kpis);
+        Tile(sheet, first, $"Latest · {kpis.LatestLabel}", DashboardPane.Format(kpis.Latest, kpis.IsPercent), BrandDark);
+        ComparisonTile(sheet, first + 3, kpis.PreviousPeriod, kpis);
+        ComparisonTile(sheet, first + 6, kpis.SamePeriodLastYear, kpis);
 
         if (kpis.HasMissingData)
         {
-            var warning = sheet.Range[$"{KpiColumns[0]}3"];
+            var warning = sheet.Range[$"{Letter(first)}3"];
             warning.Value2 = "⚠ Includes periods with missing data";
             warning.Font.Color = Orange;
         }
     }
 
-    private static readonly string[] KpiColumns = ["E", "H", "K"];
-
-    private static void ComparisonTile(Worksheet sheet, string column, string prefix, Comparison? comparison, KpiSummary kpis)
+    private static void ComparisonTile(Worksheet sheet, int column, Comparison? comparison, KpiSummary kpis)
     {
-        if (comparison?.Change is not decimal change)
+        if (comparison is null) return;
+
+        if (comparison.Change is not decimal change)
         {
-            Tile(sheet, column, comparison is null ? "" : $"{prefix} {comparison.Label}", comparison is null ? "" : "n/a", null);
+            Tile(sheet, column, $"vs {comparison.Label}", "n/a", null);
             return;
         }
 
-        var text = kpis.IsPercent
-            ? change.ToString("+0.0;-0.0;0.0", CultureInfo.InvariantCulture) + " pp"
-            : change.ToString("+0.0;-0.0;0.0", CultureInfo.InvariantCulture) + "%";
-
+        var text = change.ToString("+0.0;-0.0;0.0", CultureInfo.InvariantCulture) + (kpis.IsPercent ? " pp" : "%");
         int? colour = change == 0m ? null : (change > 0m) == kpis.HigherIsBetter ? Green : Red;
-        Tile(sheet, column, $"{prefix} {comparison.Label}", text, colour);
+        Tile(sheet, column, $"vs {comparison.Label}", text, colour);
     }
 
-    private static void Tile(Worksheet sheet, string column, string label, string value, int? valueColour)
+    private static void Tile(Worksheet sheet, int column, string label, string value, int? valueColour)
     {
-        var labelCell = sheet.Range[$"{column}1"];
+        var labelCell = sheet.Range[$"{Letter(column)}1"];
         labelCell.Value2 = label;
         labelCell.Font.Size = 9;
         labelCell.Font.Color = Grey;
 
-        var valueCell = sheet.Range[$"{column}2"];
+        var valueCell = sheet.Range[$"{Letter(column)}2"];
         valueCell.Value2 = value;
         valueCell.Font.Size = 16;
         valueCell.Font.Bold = true;
@@ -192,28 +237,70 @@ internal static class DashboardRenderer
             valueCell.Font.Color = c;
     }
 
-    private static void DrawChart(Worksheet sheet, SeriesResult result, string valueFormat, int lastRow)
+    private static void DrawChart(Worksheet sheet, DashboardView view, Layout layout, string valueFormat)
     {
-        var chart = GetOrCreateChart(sheet).Chart;
-        var isPercent = result.Metric.IsPercent;
+        var chart = GetOrCreateChart(sheet, layout).Chart;
+        var isPercent = view.Series.Metric.IsPercent;
+        var brokenDown = view.Parts.Count > 0;
 
-        chart.ChartType = isPercent ? XlChartType.xlLineMarkers : XlChartType.xlColumnClustered;
+        // Ratios are trends, so they are lines; amounts split into parts stack up to their total.
+        chart.ChartType = isPercent ? XlChartType.xlLineMarkers
+            : brokenDown ? XlChartType.xlColumnStacked
+            : XlChartType.xlColumnClustered;
         chart.DisplayBlanksAs = XlDisplayBlanksAs.xlNotPlotted;
-        chart.HasLegend = false;
         chart.HasTitle = true;
-        chart.ChartTitle.Text = Title(result);
+        chart.ChartTitle.Text = Title(view);
         chart.ChartTitle.Format.TextFrame2.TextRange.Font.Fill.ForeColor.RGB = BrandDark;
+        chart.HasLegend = brokenDown;
+        if (brokenDown)
+            chart.Legend.Position = XlLegendPosition.xlLegendPositionBottom;
 
         var seriesCollection = (SeriesCollection)chart.SeriesCollection();
         while (seriesCollection.Count > 0)
             seriesCollection.Item(1).Delete();
 
-        var series = seriesCollection.NewSeries();
-        series.Name = result.Metric.DisplayName;
-        series.XValues = sheet.Range[$"A{HeaderRow + 1}:A{lastRow}"];
-        series.Values = sheet.Range[$"B{HeaderRow + 1}:B{lastRow}"];
+        if (!brokenDown)
+        {
+            var series = AddSeries(seriesCollection, sheet, layout, Layout.ValueColumn, view.Series.Metric.DisplayName);
+            StyleSingle(series, view.Series, isPercent, valueFormat);
+        }
+        else
+        {
+            for (var p = 0; p < view.Parts.Count; p++)
+            {
+                var part = view.Parts[p];
+                var series = AddSeries(seriesCollection, sheet, layout, layout.PartColumn(p), PartName(view, part));
+                StylePart(series, part, Tint(p, view.Parts.Count), isPercent, valueFormat);
+            }
 
-        // Earlier periods in the light brand colour, so the dark latest period stands out.
+            // For a ratio the total cannot be read off stacked parts, so it is drawn as its own bold line.
+            if (isPercent)
+            {
+                var total = AddSeries(seriesCollection, sheet, layout, Layout.ValueColumn, TotalName(view));
+                StyleTotalLine(total, view.Series, valueFormat);
+            }
+        }
+
+        var valueAxis = (Axis)chart.Axes(XlAxisType.xlValue);
+        valueAxis.TickLabels.NumberFormat = valueFormat;
+        valueAxis.HasTitle = true;
+        valueAxis.AxisTitle.Text = isPercent ? "%" : "USD thousands";
+        valueAxis.HasMajorGridlines = true;
+        valueAxis.MajorGridlines.Format.Line.ForeColor.RGB = BrandLight;
+    }
+
+    private static Series AddSeries(SeriesCollection collection, Worksheet sheet, Layout layout, int column, string name)
+    {
+        var series = collection.NewSeries();
+        series.Name = name;
+        series.XValues = sheet.Range[layout.DataColumn(Layout.PeriodColumn)];
+        series.Values = sheet.Range[layout.DataColumn(column)];
+        return series;
+    }
+
+    /// <summary>One series: earlier periods in the light brand colour, the latest in the dark one.</summary>
+    private static void StyleSingle(Series series, SeriesResult result, bool isPercent, string valueFormat)
+    {
         if (isPercent)
         {
             series.Format.Line.ForeColor.RGB = BrandDark;
@@ -235,16 +322,82 @@ internal static class DashboardRenderer
         if (series.HasDataLabels)
             ((DataLabels)series.DataLabels()).NumberFormat = valueFormat;
 
+        ForEachPoint(series, result, (point, isLatest) =>
+        {
+            if (isLatest)
+            {
+                if (isPercent)
+                {
+                    point.MarkerSize = 10;
+                    point.MarkerBackgroundColor = BrandDark;
+                    point.MarkerForegroundColor = BrandDark;
+                }
+                else
+                {
+                    point.Format.Fill.ForeColor.RGB = BrandDark;
+                }
+                LabelLatest(point, valueFormat, BrandDark);
+            }
+        }, isPercent);
+    }
+
+    /// <summary>One part of a breakdown: its own shade of the brand colour; earlier periods faded so the latest stands out.</summary>
+    private static void StylePart(Series series, SeriesResult part, int colour, bool isPercent, string valueFormat)
+    {
+        if (isPercent)
+        {
+            series.Format.Line.ForeColor.RGB = colour;
+            series.Format.Line.Weight = 1.5f;
+            series.MarkerStyle = XlMarkerStyle.xlMarkerStyleCircle;
+            series.MarkerSize = 5;
+            series.MarkerBackgroundColor = colour;
+            series.MarkerForegroundColor = colour;
+        }
+        else
+        {
+            series.Format.Fill.ForeColor.RGB = colour;
+        }
+
+        ForEachPoint(series, part, (point, isLatest) =>
+        {
+            if (isPercent)
+            {
+                if (isLatest)
+                {
+                    point.MarkerSize = 9;
+                    LabelLatest(point, valueFormat, colour);
+                }
+            }
+            else if (!isLatest)
+            {
+                point.Format.Fill.Transparency = 0.45f;
+            }
+        }, isPercent);
+    }
+
+    private static void StyleTotalLine(Series series, SeriesResult total, string valueFormat)
+    {
+        series.Format.Line.ForeColor.RGB = BrandDark;
+        series.Format.Line.Weight = 3f;
+        series.Format.Line.DashStyle = Microsoft.Office.Core.MsoLineDashStyle.msoLineDash;
+        series.MarkerStyle = XlMarkerStyle.xlMarkerStyleNone;
+
+        var last = total.Points.Count;
+        if (total.Points[last - 1].Value is not null)
+            LabelLatest((Point)series.Points(last), valueFormat, BrandDark);
+    }
+
+    /// <summary>Applies <paramref name="style"/> to each plotted point, then outlines periods with missing data in orange.</summary>
+    private static void ForEachPoint(Series series, SeriesResult result, Action<Point, bool> style, bool isPercent)
+    {
         for (var i = 0; i < result.Points.Count; i++)
         {
             var point = result.Points[i];
             if (point.Value is null) continue;
 
             var chartPoint = (Point)series.Points(i + 1);
-            if (i == result.Points.Count - 1)
-                HighlightLatest(chartPoint, isPercent, valueFormat);
+            style(chartPoint, i == result.Points.Count - 1);
 
-            // Periods with missing data get an orange outline, matching the orange rows in the table.
             if (!point.IsComplete)
             {
                 if (isPercent)
@@ -256,39 +409,29 @@ internal static class DashboardRenderer
                 }
             }
         }
-
-        var valueAxis = (Axis)chart.Axes(XlAxisType.xlValue);
-        valueAxis.TickLabels.NumberFormat = valueFormat;
-        valueAxis.HasTitle = true;
-        valueAxis.AxisTitle.Text = isPercent ? "%" : "USD thousands";
-        valueAxis.HasMajorGridlines = true;
-        valueAxis.MajorGridlines.Format.Line.ForeColor.RGB = BrandLight;
     }
 
-    /// <summary>The CFO's office asked for the latest period to stand out: dark brand colour and a bold label.</summary>
-    private static void HighlightLatest(Point point, bool isPercent, string valueFormat)
+    private static void LabelLatest(Point point, string valueFormat, int colour)
     {
-        if (isPercent)
-        {
-            point.MarkerSize = 10;
-            point.MarkerBackgroundColor = BrandDark;
-            point.MarkerForegroundColor = BrandDark;
-        }
-        else
-        {
-            point.Format.Fill.ForeColor.RGB = BrandDark;
-        }
-
         point.HasDataLabel = true;
         point.DataLabel.NumberFormat = valueFormat;
         point.DataLabel.Font.Bold = true;
-        point.DataLabel.Font.Color = BrandDark;
+        point.DataLabel.Font.Color = colour;
     }
 
-    private static ChartObject GetOrCreateChart(Worksheet sheet)
+    /// <summary>Shades from the dark brand colour towards the light one, so every part stays on-brand but distinct.</summary>
+    internal static int Tint(int index, int count)
+    {
+        var t = count <= 1 ? 0.0 : 0.75 * index / (count - 1);
+        int Channel(int shift) =>
+            (int)Math.Round(((BrandDark >> shift) & 0xFF) + t * (((BrandLight >> shift) & 0xFF) - ((BrandDark >> shift) & 0xFF)));
+        return Channel(0) | Channel(8) << 8 | Channel(16) << 16;
+    }
+
+    private static ChartObject GetOrCreateChart(Worksheet sheet, Layout layout)
     {
         // The chart sits below the headline tiles in rows 1-3.
-        var anchor = sheet.Range["E5"];
+        var anchor = sheet.Range[$"{Letter(layout.TileColumn)}5"];
         var chartObjects = (ChartObjects)sheet.ChartObjects();
         foreach (ChartObject existing in chartObjects)
         {
@@ -303,5 +446,14 @@ internal static class DashboardRenderer
         var created = chartObjects.Add((double)anchor.Left, (double)anchor.Top, 640, 360);
         created.Name = ChartName;
         return created;
+    }
+
+    /// <summary>1 -> "A", 27 -> "AA".</summary>
+    private static string Letter(int column)
+    {
+        var letters = "";
+        for (; column > 0; column = (column - 1) / 26)
+            letters = (char)('A' + (column - 1) % 26) + letters;
+        return letters;
     }
 }

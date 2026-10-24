@@ -9,8 +9,6 @@ namespace FinanceDashboard.AddIn;
 
 /// <summary>
 /// The task pane: the user's choices, plus a table of the numbers behind the chart.
-/// Every change recalculates straight away; there is no "Apply" button.
-/// The layout is built in code, so the class opts out of the Visual Studio designer.
 /// </summary>
 [ComVisible(true)]
 [System.ComponentModel.DesignerCategory("")]
@@ -19,6 +17,7 @@ public class DashboardPane : UserControl
     private readonly ComboBox _metric = NewCombo();
     private readonly ComboBox _segment = NewCombo();
     private readonly ComboBox _country = NewCombo();
+    private readonly ComboBox _compare = NewCombo();
     private readonly RadioButton _monthly = new() { Text = "Monthly", AutoSize = true, Checked = true };
     private readonly RadioButton _quarterly = new() { Text = "Quarterly", AutoSize = true };
     private readonly NumericUpDown _periods = new() { Minimum = 1, Maximum = 30, Value = 12, Width = 60 };
@@ -40,9 +39,17 @@ public class DashboardPane : UserControl
     {
         BuildLayout();
 
+        Fill(_compare,
+        [
+            new Choice(nameof(Breakdown.None), "No comparison"),
+            new Choice(nameof(Breakdown.Segment), "Each segment"),
+            new Choice(nameof(Breakdown.Country), "Each country")
+        ], nameof(Breakdown.None));
+
         _metric.SelectedIndexChanged += (_, _) => Recalculate();
         _segment.SelectedIndexChanged += (_, _) => Recalculate();
         _country.SelectedIndexChanged += (_, _) => Recalculate();
+        _compare.SelectedIndexChanged += (_, _) => OnCompareChanged();
         _monthly.CheckedChanged += (_, _) => OnFrequencyChanged();
         _periods.ValueChanged += (_, _) => Recalculate();
         _reload.Click += (_, _) => Reload();
@@ -51,8 +58,8 @@ public class DashboardPane : UserControl
     /// <summary>Where the data comes from; set by <see cref="TaskPaneManager"/>.</summary>
     public Func<FinancialData>? DataSource { get; set; }
 
-    /// <summary>Raised after every successful calculation, with the series to chart and its headline numbers.</summary>
-    public event Action<SeriesResult, KpiSummary>? SeriesCalculated;
+    /// <summary>Raised after every successful calculation, with everything the dashboard shows.</summary>
+    public event Action<DashboardView>? Calculated;
 
     /// <summary>Reads the workbook again and refreshes the choices, keeping the current ones where possible.</summary>
     public void Reload()
@@ -87,6 +94,18 @@ public class DashboardPane : UserControl
 
         Recalculate();
     }
+
+    /// <summary>Comparing every segment makes the segment choice irrelevant, so it is greyed out (likewise for country).</summary>
+    private void OnCompareChanged()
+    {
+        var breakdown = CurrentBreakdown();
+        _segment.Enabled = breakdown != Breakdown.Segment;
+        _country.Enabled = breakdown != Breakdown.Country;
+        Recalculate();
+    }
+
+    private Breakdown CurrentBreakdown() =>
+        _compare.SelectedItem is Choice choice ? (Breakdown)Enum.Parse(typeof(Breakdown), choice.Value) : Breakdown.None;
 
     private void OnFrequencyChanged()
     {
@@ -124,12 +143,10 @@ public class DashboardPane : UserControl
     {
         if (_populating || _data is null || CurrentSelection() is not Selection selection) return;
 
-        SeriesResult result;
-        KpiSummary kpis;
+        DashboardView view;
         try
         {
-            result = SeriesCalculator.Calculate(_data, selection);
-            kpis = KpiCalculator.Calculate(_data, selection);
+            view = DashboardCalculator.Calculate(_data, selection, CurrentBreakdown());
         }
         catch (ArgumentException ex)
         {
@@ -138,8 +155,8 @@ public class DashboardPane : UserControl
             return;
         }
 
-        ShowPreview(result);
-        SeriesCalculated?.Invoke(result, kpis);
+        ShowPreview(view.Series);
+        Calculated?.Invoke(view);
     }
 
     private void ShowPreview(SeriesResult result)
@@ -200,6 +217,7 @@ public class DashboardPane : UserControl
         AddRow(grid, "Metric", _metric);
         AddRow(grid, "Segment", _segment);
         AddRow(grid, "Country", _country);
+        AddRow(grid, "Compare", _compare);
         AddRow(grid, "Periods", frequency);
         AddRow(grid, "Show", periods);
         AddRow(grid, "", _reload);

@@ -7,7 +7,6 @@ namespace FinanceDashboard.AddIn;
 
 /// <summary>
 /// Creates the Finance Dashboard task pane once and shows it again on later clicks.
-/// Connects the pane to the workbook: data is read from it and each new series is drawn on its Dashboard sheet.
 /// </summary>
 internal static class TaskPaneManager
 {
@@ -25,11 +24,11 @@ internal static class TaskPaneManager
 
             var control = (DashboardPane)_pane.ContentControl;
             control.DataSource = () => WorkbookData.Load(Excel.ActiveWorkbook);
-            control.SeriesCalculated += (result, kpis) =>
+            control.Calculated += view =>
             {
                 try
                 {
-                    DashboardRenderer.Render(Excel.ActiveWorkbook, result, kpis);
+                    DashboardRenderer.Render(Excel.ActiveWorkbook, view);
                 }
                 catch (COMException ex)
                 {
