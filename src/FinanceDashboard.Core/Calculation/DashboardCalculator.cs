@@ -23,6 +23,9 @@ public sealed record DashboardView(
 {
     /// <summary>A plain-English summary written by <see cref="CommentaryWriter"/>.</summary>
     public string Commentary { get; init; } = "";
+
+    /// <summary>Segment-by-country grid for the latest period, regardless of the segment and country filters.</summary>
+    public Heatmap? Heatmap { get; init; }
 }
 
 public static class DashboardCalculator
@@ -50,7 +53,11 @@ public static class DashboardCalculator
             breakdownBy,
             parts.Select(p => TryCalculate(data, p)).OfType<SeriesResult>().ToList());
 
-        return view with { Commentary = CommentaryWriter.Write(data, view) };
+        return view with
+        {
+            Commentary = CommentaryWriter.Write(data, view),
+            Heatmap = HeatmapCalculator.Calculate(data, view.Series.Metric.Code, selection.Frequency)
+        };
     }
 
     /// <summary>A part with no data (e.g. a country a segment does not operate in) is left out rather than failing.</summary>

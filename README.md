@@ -19,6 +19,8 @@ chart straight away.
   sheet's own note is quoted (for example "Jun-25 not closed yet").
 - **Automatic commentary:** a plain-English summary above the chart, for example *"Revenue across all segments in
   India was USD 10.3m in Jun 25, down 2.7% on May 25…"*, including which segment moved most.
+- **Heatmap:** every segment against every country for the latest period, shaded in the brand colours, to show
+  where a metric is highest or lowest.
 - **Worksheet functions:** `FIN.VALUE`, `FIN.SERIES` and `FIN.COMMENTARY` give the same numbers in any cell, using the
   same engine as the dashboard.
 - **Brand colours and the latest period:** see "Requirements outside the brief's main text" below.
@@ -52,7 +54,7 @@ dotnet build
 dotnet test
 ```
 
-Expect `Build succeeded` and `Passed! - Failed: 0, Passed: 118`. The tests include the brief's four worked examples
+Expect `Build succeeded` and `Passed! - Failed: 0, Passed: 124`. The tests include the brief's four worked examples
 (E1-E4), run against the real `data/Financials.xlsx`.
 
 ### 4. Find out whether your Excel is 64-bit or 32-bit
@@ -214,6 +216,18 @@ A short summary that rewrites itself with every change. It gives:
 
 The text box sits on top of the chart, so copying both into a report keeps the commentary with the chart.
 
+**5. Heatmap (below the chart)**
+
+A grid of every segment against every country for the **latest** month or quarter, with totals. It answers
+"where?", which the trend chart cannot: for example, which segment and country has the highest cost-to-income.
+
+- Cells are shaded from light to dark brand colour: **darker = higher**. Totals are bold and not shaded.
+- It follows the chosen **metric** and **Monthly / Quarterly**, but always shows every segment and country, whatever
+  the Segment and Country filters say.
+- Every cell is calculated exactly as the dashboard would for that segment and country, so the cost-to-income totals
+  follow the same rules as E3 and E4.
+- A cell with missing data has an **orange border**; one with no value at all shows **⚠ n/a**.
+
 ### Worksheet functions
 
 The same numbers can be used in any cell, so analysts can build them into their own models. Type `=FIN.` in a cell
@@ -264,6 +278,8 @@ Leave **Compare** on *No comparison*. For a view of E3 and E4 together, choose E
 - **Which segment drives revenue?** Revenue · All · All · Monthly · 12 · Compare: Each segment.
 - **Is the cost base growing?** Operating expenses · All · All · Quarterly · 10. Watch the vs-last-year tile.
 - **How do countries compare on efficiency?** Cost-to-income % · All · All · Quarterly · 8 · Compare: Each country.
+- **Where are costs highest relative to income?** Cost-to-income % · Quarterly, then look at the heatmap below the
+  chart. The darkest cell is the least efficient segment and country.
 - **See a missing month:** Operating expenses · Treasury · UK · Monthly · 6. Jun 25 is a gap; hover over its row in
   the pane, and read the commentary.
 - **Check E2 with a formula:** in an empty cell on any sheet, type `=FIN.SERIES("Revenue", "All", "India", "M", 6)`.
@@ -274,7 +290,8 @@ Leave **Compare** on *No comparison*. For a view of E3 and E4 together, choose E
 src/FinanceDashboard.Core      All parsing and calculation. No Excel code; netstandard2.0.
   Model/                       Period, FinancialRecord, MetricInfo, Selection, SeriesResult
   Parsing/                     Turns sheet cells (object[,]) into the model
-  Calculation/                 SeriesCalculator, KpiCalculator, DashboardCalculator, CommentaryWriter, AggregationRules
+  Calculation/                 SeriesCalculator, KpiCalculator, DashboardCalculator, CommentaryWriter,
+                               HeatmapCalculator, AggregationRules
 src/FinanceDashboard.AddIn     Excel-DNA add-in: ribbon, task pane, FIN.* functions, reading the workbook, drawing the dashboard
 tests/FinanceDashboard.Tests   xUnit tests for Core, including E1-E4 against data/Financials.xlsx
 ```

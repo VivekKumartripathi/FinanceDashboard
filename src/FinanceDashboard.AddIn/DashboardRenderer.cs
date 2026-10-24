@@ -18,6 +18,7 @@ internal static class DashboardRenderer
     private const string ChartName = "FinanceChart";
     private const string CommentaryName = "FinanceCommentary";
     private const float ChartWidth = 640;
+    private const float ChartHeight = 360;
     private const int HeaderRow = 4;
 
     // Excel colours are BGR: 0xBBGGRR.
@@ -47,6 +48,8 @@ internal static class DashboardRenderer
             WriteKpis(sheet, view.Kpis, layout);
             var chartTop = WriteCommentary(sheet, view.Commentary, layout);
             DrawChart(sheet, view, layout, valueFormat, chartTop);
+            if (view.Heatmap is Heatmap heatmap)
+                WriteHeatmap(sheet, heatmap, view.Series.Metric, layout, valueFormat, chartTop + ChartHeight + 12);
         }
         finally
         {
@@ -284,6 +287,7 @@ internal static class DashboardRenderer
             box.TextFrame2.MarginRight = 8;
         }
 
+        box.Placement = XlPlacement.xlFreeFloating;
         box.Left = (float)(double)anchor.Left;
         box.Top = (float)(double)anchor.Top;
         box.Width = ChartWidth;
@@ -346,6 +350,108 @@ internal static class DashboardRenderer
         valueAxis.AxisTitle.Text = isPercent ? "%" : "USD thousands";
         valueAxis.HasMajorGridlines = true;
         valueAxis.MajorGridlines.Format.Line.ForeColor.RGB = BrandLight;
+    }
+
+    /// <summary>
+    /// Segment-by-country grid for the latest period, below the chart. Cells are shaded from the light to the dark
+    /// brand colour by value (darker = higher), so the highest and lowest combinations stand out at a glance.
+    /// Totals are not shaded, so they do not stretch the colour range.
+    /// </summary>
+    private static void WriteHeatmap(Worksheet sheet, Heatmap heatmap, MetricInfo metric, Layout layout, string valueFormat, double top)
+    {
+        var firstRow = RowAt(sheet, top);
+        var firstColumn = layout.TileColumn;
+        var segments = heatmap.Segments;
+        var countries = heatmap.Countries;
+        var lastColumn = firstColumn + countries.Count + 1;
+
+        var heading = sheet.Range[$"{Letter(firstColumn)}{firstRow}"];
+        heading.Value2 = $"Where is {metric.DisplayName} highest? · {heatmap.PeriodLabel} · darker = higher";
+        heading.Font.Bold = true;
+        heading.Font.Color = BrandDark;
+
+        var headerRow = firstRow + 1;
+        var cells = new object?[segments.Count + 2, countries.Count + 2];
+        cells[0, 0] = "";
+        for (var c = 0; c < countries.Count; c++)
+            cells[0, c + 1] = countries[c];
+        cells[0, countries.Count + 1] = "All countries";
+
+        var rowNames = segments.Append(Selection.All).ToList();
+        var columnNames = countries.Append(Selection.All).ToList();
+        for (var r = 0; r < rowNames.Count; r++)
+        {
+            cells[r + 1, 0] = rowNames[r] == Selection.All ? "All segments" : rowNames[r];
+            for (var c = 0; c < columnNames.Count; c++)
+                cells[r + 1, c + 1] = ToCell(heatmap.Cell(rowNames[r], columnNames[c]).Value);
+        }
+
+        var lastRow = headerRow + rowNames.Count;
+        var grid = sheet.Range[$"{Letter(firstColumn)}{headerRow}:{Letter(lastColumn)}{lastRow}"];
+        grid.Value2 = cells;
+        sheet.Range[$"{Letter(firstColumn + 1)}{headerRow + 1}:{Letter(lastColumn)}{lastRow}"].NumberFormat = valueFormat;
+        for (var c = firstColumn; c <= lastColumn; c++)
+            ((Range)sheet.Columns[c]).ColumnWidth = c == firstColumn ? 14 : 13;
+
+        var header = sheet.Range[$"{Letter(firstColumn)}{headerRow}:{Letter(lastColumn)}{headerRow}"];
+        header.Font.Bold = true;
+        header.Font.Color = BrandDark;
+        header.Borders[XlBordersIndex.xlEdgeBottom].LineStyle = XlLineStyle.xlContinuous;
+        header.Borders[XlBordersIndex.xlEdgeBottom].Color = BrandDark;
+        sheet.Range[$"{Letter(firstColumn)}{headerRow + 1}:{Letter(firstColumn)}{lastRow}"].Font.Bold = true;
+
+        var totals = sheet.Range[$"{Letter(firstColumn)}{lastRow}:{Letter(lastColumn)}{lastRow}"];
+        totals.Font.Bold = true;
+        totals.Borders[XlBordersIndex.xlEdgeTop].LineStyle = XlLineStyle.xlContinuous;
+        sheet.Range[$"{Letter(lastColumn)}{headerRow + 1}:{Letter(lastColumn)}{lastRow}"].Font.Bold = true;
+
+        // Shade the inner grid only.
+        var inner = segments.SelectMany(s => countries.Select(c => heatmap.Cell(s, c))).ToList();
+        var values = inner.Where(c => c.Value is not null).Select(c => c.Value!.Value).ToList();
+        if (values.Count == 0) return;
+        var (min, max) = (values.Min(), values.Max());
+
+        for (var r = 0; r < segments.Count; r++)
+        {
+            for (var c = 0; c < countries.Count; c++)
+            {
+                var cell = heatmap.Cell(segments[r], countries[c]);
+                var range = sheet.Range[$"{Letter(firstColumn + 1 + c)}{headerRow + 1 + r}"];
+
+                if (cell.Value is decimal v)
+                {
+                    var t = max == min ? 1.0 : (double)((v - min) / (max - min));
+                    range.Interior.Color = Blend(BrandLight, BrandDark, t);
+                    range.Font.Color = t > 0.55 ? 0xFFFFFF : BrandDark;   // keep text readable on dark cells
+                }
+
+                if (!cell.IsComplete)
+                {
+                    range.Borders.LineStyle = XlLineStyle.xlContinuous;
+                    range.Borders.Weight = XlBorderWeight.xlThick;
+                    range.Borders.Color = Orange;
+                    if (cell.Value is null)
+                        range.Value2 = "⚠ n/a";
+                }
+            }
+        }
+    }
+
+    /// <summary>The first row whose top edge is at or below <paramref name="top"/> points.</summary>
+    private static int RowAt(Worksheet sheet, double top)
+    {
+        var row = 1;
+        while ((double)((Range)sheet.Rows[row]).Top < top)
+            row++;
+        return row;
+    }
+
+    /// <summary>Mixes two BGR colours: t = 0 gives <paramref name="from"/>, t = 1 gives <paramref name="to"/>.</summary>
+    private static int Blend(int from, int to, double t)
+    {
+        int Channel(int shift) =>
+            (int)Math.Round(((from >> shift) & 0xFF) + t * (((to >> shift) & 0xFF) - ((from >> shift) & 0xFF)));
+        return Channel(0) | Channel(8) << 8 | Channel(16) << 16;
     }
 
     private static Series AddSeries(SeriesCollection collection, Worksheet sheet, Layout layout, int column, string name)
@@ -482,9 +588,7 @@ internal static class DashboardRenderer
     internal static int Tint(int index, int count)
     {
         var t = count <= 1 ? 0.0 : 0.75 * index / (count - 1);
-        int Channel(int shift) =>
-            (int)Math.Round(((BrandDark >> shift) & 0xFF) + t * (((BrandLight >> shift) & 0xFF) - ((BrandDark >> shift) & 0xFF)));
-        return Channel(0) | Channel(8) << 8 | Channel(16) << 16;
+        return Blend(BrandDark, BrandLight, t);
     }
 
     private static ChartObject GetOrCreateChart(Worksheet sheet, Layout layout, double top)
@@ -496,14 +600,17 @@ internal static class DashboardRenderer
         {
             if (existing.Name == ChartName)
             {
+                existing.Placement = XlPlacement.xlFreeFloating;
                 existing.Left = left;
                 existing.Top = top;
                 return existing;
             }
         }
 
-        var created = chartObjects.Add(left, top, ChartWidth, 360);
+        var created = chartObjects.Add(left, top, ChartWidth, ChartHeight);
         created.Name = ChartName;
+        // Free-floating, so widening the heatmap columns underneath does not stretch the chart.
+        created.Placement = XlPlacement.xlFreeFloating;
         return created;
     }
 
