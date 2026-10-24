@@ -15,20 +15,47 @@ public static class SeriesCalculator
         var metric = data.GetMetric(selection.Metric);
         if (metric.IsCalculated)
             throw new NotSupportedException($"{metric.DisplayName} is not supported yet.");
-        if (selection.Frequency != Frequency.Monthly)
-            throw new NotSupportedException("Quarterly periods are not supported yet.");
 
         var totals = MonthlyTotals(Filter(data, metric.Code, selection.Segment, selection.Country), data.Periods.Count);
+        var aggregation = AggregationRules.For(metric.Code);
 
         // The chart always ends at the latest month; asking for more periods than exist shows them all.
-        var count = Math.Min(selection.PeriodCount, data.Periods.Count);
-        var first = data.Periods.Count - count;
-
-        var points = Enumerable.Range(first, count)
-            .Select(i => new SeriesPoint(data.Periods[i].MonthLabel, totals[i], []))
+        var buckets = Buckets(data.Periods, selection.Frequency);
+        var points = buckets
+            .Skip(Math.Max(0, buckets.Count - selection.PeriodCount))
+            .Select(b => new SeriesPoint(b.Label, Aggregate(totals, b, aggregation), b.Notes))
             .ToList();
 
         return new SeriesResult(selection, metric, points);
+    }
+
+    /// <summary>
+    /// One chart period: its label and the month indexes (into <see cref="FinancialData.Periods"/>) it covers.
+    /// </summary>
+    internal sealed record Bucket(string Label, IReadOnlyList<int> MonthIndexes, IReadOnlyList<string> Notes);
+
+    /// <summary>
+    /// Groups the months into chart periods: one per month, or one per calendar quarter (Jan-Mar, Apr-Jun, ...).
+    /// A quarter the data only partly covers is kept, so the chart still ends at the latest month, and is flagged.
+    /// </summary>
+    internal static IReadOnlyList<Bucket> Buckets(IReadOnlyList<Period> periods, Frequency frequency)
+    {
+        if (frequency == Frequency.Monthly)
+            return periods.Select((p, i) => new Bucket(p.MonthLabel, [i], [])).ToList();
+
+        return periods
+            .Select((p, i) => (Period: p, Index: i))
+            .GroupBy(x => (x.Period.Year, x.Period.Quarter))
+            .Select(g =>
+            {
+                var indexes = g.Select(x => x.Index).ToList();
+                var label = g.First().Period.QuarterLabel;
+                IReadOnlyList<string> notes = indexes.Count < 3
+                    ? [$"{label} covers only {indexes.Count} of 3 months."]
+                    : [];
+                return new Bucket(label, indexes, notes);
+            })
+            .ToList();
     }
 
     /// <summary>
@@ -61,6 +88,23 @@ public static class SeriesCalculator
             }
         }
         return totals;
+    }
+
+    /// <summary>
+    /// Rolls monthly totals up into one bucket: the sum of its months, or the value at its last month.
+    /// </summary>
+    internal static decimal? Aggregate(decimal?[] monthlyTotals, Bucket bucket, Aggregation aggregation)
+    {
+        if (aggregation == Aggregation.PeriodEnd)
+            return monthlyTotals[bucket.MonthIndexes[bucket.MonthIndexes.Count - 1]];
+
+        decimal? sum = null;
+        foreach (var i in bucket.MonthIndexes)
+        {
+            if (monthlyTotals[i] is decimal value)
+                sum = (sum ?? 0m) + value;
+        }
+        return sum;
     }
 
     private static bool Matches(string value, string wanted) =>
