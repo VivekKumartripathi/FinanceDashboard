@@ -4,6 +4,8 @@ An Excel add-in (C#, Excel-DNA) that lets a finance user chart the bank's monthl
 metric, business segment, country, monthly or quarterly periods, and how many periods. Every change redraws the
 chart straight away.
 
+![The dashboard: Revenue for all segments in India, monthly, with the pane on the right](docs/dashboard.png)
+
 ## Features at a glance
 
 - **Task pane** with the five choices, plus a **Compare** option (each segment or each country). There is no Apply
@@ -198,6 +200,8 @@ The segment, country and metric lists are read from the data, so new rows appear
   - Cost-to-income % shows one line per part plus the overall figure as a **bold dashed line**.
   - Earlier periods are faded so the latest column stands out.
 
+![Revenue compared by segment as stacked columns](docs/compare.png)
+
 **4. Commentary (above the chart)**
 
 A short summary that rewrites itself with every change. It gives:
@@ -237,6 +241,8 @@ Two cells in the data are blank, each with a note in the Financials sheet:
 |---|---|---|
 | Treasury / UK / Expenses, Jun 25 | Jun-25 not closed yet | Operating expenses and Cost-to-income % for Jun 25 or Q2 25, when the selection includes Treasury and UK |
 | Wealth / India / Revenue, Feb 24 | Feb-24 awaiting restatement | Revenue and Cost-to-income % for Feb 24 or Q1 24, when the selection includes Wealth and India |
+
+![A missing month: Jun 25 has no value, is flagged in orange and explained](docs/missing-data.png)
 
 A blank is never counted as zero. Totals use the cells that have values and are flagged; Cost-to-income % leaves the
 blank month out of both expenses and revenue. See [Blank cells](#blank-cells) for the reasoning.
