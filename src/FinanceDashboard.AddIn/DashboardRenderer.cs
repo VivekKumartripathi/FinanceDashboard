@@ -129,14 +129,17 @@ internal static class DashboardRenderer
         var unit = view.Series.Metric.IsPercent ? "Percent" : "USD thousands";
         var warnings = points.Count(p => !p.IsComplete);
 
+        var titleText = Title(view);
+        var unitText = warnings == 0
+            ? unit
+            : $"{unit} · ⚠ {warnings} period(s) have missing data, see Note";
+
         var title = sheet.Range["A1"];
-        title.Value2 = Title(view);
+        title.Value2 = titleText;
         title.Font.Bold = true;
         title.Font.Size = 14;
         title.Font.Color = BrandDark;
-        sheet.Range["A2"].Value2 = warnings == 0
-            ? unit
-            : $"{unit} · ⚠ {warnings} period(s) have missing data, see Note";
+        sheet.Range["A2"].Value2 = unitText;
 
         // Labels such as "Jan 25" would be turned into dates by Excel, so the column is formatted as text first.
         sheet.Range[layout.Column(Layout.PeriodColumn, HeaderRow, layout.LastRow)].NumberFormat = "@";
@@ -178,11 +181,25 @@ internal static class DashboardRenderer
         latestRow.Font.Bold = true;
         latestRow.Interior.Color = BrandLight;
 
-        ((Range)sheet.Columns[Layout.PeriodColumn]).ColumnWidth = 10;
-        ((Range)sheet.Columns[Layout.ValueColumn]).ColumnWidth = 14;
+        const double periodWidth = 10, valueWidth = 14, partWidth = 12;
+        ((Range)sheet.Columns[Layout.PeriodColumn]).ColumnWidth = periodWidth;
+        ((Range)sheet.Columns[Layout.ValueColumn]).ColumnWidth = valueWidth;
         for (var p = 0; p < view.Parts.Count; p++)
-            ((Range)sheet.Columns[layout.PartColumn(p)]).ColumnWidth = 12;
-        ((Range)sheet.Columns[layout.NoteColumn]).ColumnWidth = 12;
+            ((Range)sheet.Columns[layout.PartColumn(p)]).ColumnWidth = partWidth;
+
+        // The Note column is the last one before the tiles, so it is widened until the notes, the title and the unit
+        // line all fit; otherwise the tiles would cut them off. Widths are in characters of the standard font,
+        // and the 14pt bold title needs about 1.45 times as much room per character.
+        var longestNote = points.Where(p => !p.IsComplete).Select(p => string.Join(" ", p.Notes).Length).DefaultIfEmpty(0).Max();
+        var tableWidth = periodWidth + valueWidth + partWidth * view.Parts.Count;
+        var noteWidth = new[]
+        {
+            12,
+            Math.Min(longestNote, 80),
+            titleText.Length * 1.45 - tableWidth,
+            unitText.Length - tableWidth
+        }.Max();
+        ((Range)sheet.Columns[layout.NoteColumn]).ColumnWidth = Math.Ceiling(noteWidth);
         sheet.Range[$"{Letter(layout.NoteColumn + 1)}:{Letter(layout.TileColumn + 12)}"].ColumnWidth = sheet.StandardWidth;
     }
 

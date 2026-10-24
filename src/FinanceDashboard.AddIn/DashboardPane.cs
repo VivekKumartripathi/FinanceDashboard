@@ -196,7 +196,8 @@ public class DashboardPane : UserControl
     private void ShowStatus(string message, bool isError)
     {
         _status.Text = message;
-        _status.ForeColor = isError ? Color.Firebrick : SystemColors.ControlText;
+        // Ordinary messages inherit the pane colour, so they stay readable in both light and dark Office themes.
+        _status.ForeColor = isError ? Color.Firebrick : ForeColor;
     }
 
     private void BuildLayout()
