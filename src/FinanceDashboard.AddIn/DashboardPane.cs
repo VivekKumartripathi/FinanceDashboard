@@ -10,8 +10,10 @@ namespace FinanceDashboard.AddIn;
 /// <summary>
 /// The task pane: the user's choices, plus a table of the numbers behind the chart.
 /// Every change recalculates straight away; there is no "Apply" button.
+/// The layout is built in code, so the class opts out of the Visual Studio designer.
 /// </summary>
 [ComVisible(true)]
+[System.ComponentModel.DesignerCategory("")]
 public class DashboardPane : UserControl
 {
     private readonly ComboBox _metric = NewCombo();
@@ -241,22 +243,5 @@ public class DashboardPane : UserControl
         public string Value { get; } = value;
 
         public override string ToString() => text;
-    }
-
-    private void InitializeComponent()
-    {
-            this.SuspendLayout();
-            // 
-            // DashboardPane
-            // 
-            this.Name = "DashboardPane";
-            this.Load += new System.EventHandler(this.DashboardPane_Load);
-            this.ResumeLayout(false);
-
-    }
-
-    private void DashboardPane_Load(object sender, EventArgs e)
-    {
-
     }
 }
