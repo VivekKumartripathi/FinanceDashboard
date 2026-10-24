@@ -15,6 +15,10 @@ chart straight away.
   Green means good news for that metric, so a fall in expenses is green. Percent metrics change in percentage points.
 - **Missing data is visible:** periods built from blank cells are orange in the pane, table and chart, and the
   sheet's own note is quoted (for example "Jun-25 not closed yet").
+- **Automatic commentary:** a plain-English summary above the chart, for example *"Revenue across all segments in
+  India was USD 10.3m in Jun 25, down 2.7% on May 25…"*, including which segment moved most.
+- **Worksheet functions:** `FIN.VALUE`, `FIN.SERIES` and `FIN.COMMENTARY` give the same numbers in any cell, using the
+  same engine as the dashboard.
 - **Brand colours and the latest period:** see "Requirements outside the brief's main text" below.
 
 ## Getting started
@@ -46,7 +50,7 @@ dotnet build
 dotnet test
 ```
 
-Expect `Build succeeded` and `Passed! - Failed: 0, Passed: 85`. The tests include the brief's four worked examples
+Expect `Build succeeded` and `Passed! - Failed: 0, Passed: 118`. The tests include the brief's four worked examples
 (E1-E4), run against the real `data/Financials.xlsx`.
 
 ### 4. Find out whether your Excel is 64-bit or 32-bit
@@ -194,6 +198,37 @@ The segment, country and metric lists are read from the data, so new rows appear
   - Cost-to-income % shows one line per part plus the overall figure as a **bold dashed line**.
   - Earlier periods are faded so the latest column stands out.
 
+**4. Commentary (above the chart)**
+
+A short summary that rewrites itself with every change. It gives:
+
+- the latest value, in USD millions or thousands (the data is in USD thousands);
+- the change on the previous period and on last year, with *(better)* or *(worse)* for expenses and cost-to-income;
+- which segment or country moved most since the previous period;
+- whether the latest period is the highest or lowest shown;
+- any missing data, quoting the sheet's note.
+
+The text box sits on top of the chart, so copying both into a report keeps the commentary with the chart.
+
+### Worksheet functions
+
+The same numbers can be used in any cell, so analysts can build them into their own models. Type `=FIN.` in a cell
+to see the functions, or find them under **Insert Function → Finance Dashboard**.
+
+| Function | Returns | Example |
+|---|---|---|
+| `FIN.VALUE(metric, segment, country, period)` | One value | `=FIN.VALUE("Loans", "Retail", "All", "Q2 25")` → 453,406 (E1) |
+| `FIN.SERIES(metric, segment, country, [frequency], [periods])` | Period and value columns that spill down | `=FIN.SERIES("CostToIncome", "All", "India", "Q", 4)` → E4 |
+| `FIN.COMMENTARY(metric, segment, country, [frequency], [periods])` | The commentary sentence | `=FIN.COMMENTARY("Revenue", "All", "India", "M", 6)` |
+
+- **metric:** a code (`Loans`, `Revenue`, `Expenses`, `CostToIncome`) or a display name (`"Cost-to-income %"`).
+- **segment / country:** a name, or `"All"`. Cell references work too, for example `=FIN.VALUE(A2, B2, C2, D2)`.
+- **period:** `"Jun 25"`, `"June 2025"`, `"2025M06"`, `"Q2 25"` or `"2025Q2"`. A quarter gives the quarterly figure.
+- **frequency:** `"M"` (monthly, default) or `"Q"` (quarterly). **periods:** default 12.
+- **Missing data returns `#N/A`**, never zero, so it shows as a gap in charts. Bad arguments return `#VALUE!`.
+- The functions read the workbook the formula is in. When the Financials or Metrics sheet is edited, every
+  `FIN.` formula recalculates by itself.
+
 ### Missing data
 
 Two cells in the data are blank, each with a note in the Financials sheet:
@@ -224,7 +259,8 @@ Leave **Compare** on *No comparison*. For a view of E3 and E4 together, choose E
 - **Is the cost base growing?** Operating expenses · All · All · Quarterly · 10. Watch the vs-last-year tile.
 - **How do countries compare on efficiency?** Cost-to-income % · All · All · Quarterly · 8 · Compare: Each country.
 - **See a missing month:** Operating expenses · Treasury · UK · Monthly · 6. Jun 25 is a gap; hover over its row in
-  the pane.
+  the pane, and read the commentary.
+- **Check E2 with a formula:** in an empty cell on any sheet, type `=FIN.SERIES("Revenue", "All", "India", "M", 6)`.
 
 ## Project structure
 
@@ -232,8 +268,8 @@ Leave **Compare** on *No comparison*. For a view of E3 and E4 together, choose E
 src/FinanceDashboard.Core      All parsing and calculation. No Excel code; netstandard2.0.
   Model/                       Period, FinancialRecord, MetricInfo, Selection, SeriesResult
   Parsing/                     Turns sheet cells (object[,]) into the model
-  Calculation/                 SeriesCalculator, KpiCalculator, DashboardCalculator, AggregationRules
-src/FinanceDashboard.AddIn     Excel-DNA add-in: ribbon, task pane, reading the workbook, drawing the dashboard
+  Calculation/                 SeriesCalculator, KpiCalculator, DashboardCalculator, CommentaryWriter, AggregationRules
+src/FinanceDashboard.AddIn     Excel-DNA add-in: ribbon, task pane, FIN.* functions, reading the workbook, drawing the dashboard
 tests/FinanceDashboard.Tests   xUnit tests for Core, including E1-E4 against data/Financials.xlsx
 ```
 
@@ -320,5 +356,6 @@ The decisions and trade-offs are documented in the sections above, and I can wal
 
 - The dashboard redraws the whole Dashboard sheet, so anything else typed there is cleared.
 - The add-in uses the active workbook; with several data workbooks open, click **Reload data** after switching.
-- Possible next steps: a "what drove the change" variance view, copying the chart to PowerPoint, and refreshing
-  automatically when the Financials sheet changes.
+- `FIN.SERIES` spills into neighbouring cells, which needs Excel 365 or 2021. Older versions need it entered as an
+  array formula.
+- Possible next steps: a "what drove the change" variance view and copying the chart to PowerPoint in one click.

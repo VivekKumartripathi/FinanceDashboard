@@ -68,6 +68,7 @@ public class DashboardPane : UserControl
 
         try
         {
+            FormulaData.Clear();
             _data = DataSource();
         }
         catch (Exception ex) when (ex is InvalidOperationException or FormatException)

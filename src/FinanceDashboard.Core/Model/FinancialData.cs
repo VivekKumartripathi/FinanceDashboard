@@ -34,7 +34,9 @@ public sealed class FinancialData
     public IReadOnlyList<string> Countries =>
         Records.Select(r => r.Country).Distinct().OrderBy(c => c).ToList();
 
-    public MetricInfo GetMetric(string code) =>
-        Metrics.FirstOrDefault(m => string.Equals(m.Code, code, StringComparison.OrdinalIgnoreCase))
-        ?? throw new ArgumentException($"Unknown metric '{code}'.", nameof(code));
+    /// <summary>Finds a metric by its code ("CostToIncome") or its display name ("Cost-to-income %").</summary>
+    public MetricInfo GetMetric(string codeOrName) =>
+        Metrics.FirstOrDefault(m => string.Equals(m.Code, codeOrName, StringComparison.OrdinalIgnoreCase))
+        ?? Metrics.FirstOrDefault(m => string.Equals(m.DisplayName, codeOrName, StringComparison.OrdinalIgnoreCase))
+        ?? throw new ArgumentException($"Unknown metric '{codeOrName}'.", nameof(codeOrName));
 }
