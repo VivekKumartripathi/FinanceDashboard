@@ -16,8 +16,10 @@ internal static class DashboardRenderer
     private const int HeaderRow = 4;
 
     // Excel colours are BGR: 0xBBGGRR.
+    // Brand colours from the brief's footer: #240141 and #E6E2E8.
+    private const int BrandDark = 0x410124;  // #240141: the latest period, titles
+    private const int BrandLight = 0xE8E2E6; // #E6E2E8: earlier periods, header fills
     private const int Orange = 0x317DED;  // RGB(237, 125, 49): periods with missing data
-    private const int Blue = 0xBD7244;    // RGB(68, 114, 189)
     private const int Green = 0x3F8A2E;   // RGB(46, 138, 63): good news
     private const int Red = 0x2C2CC0;     // RGB(192, 44, 44): bad news
     private const int Grey = 0x707070;
@@ -30,6 +32,7 @@ internal static class DashboardRenderer
         try
         {
             var sheet = GetOrCreateSheet(workbook);
+            HideCfoNote(sheet);
             var valueFormat = result.Metric.IsPercent ? "0.0\"%\"" : "#,##0";
             var lastRow = WriteTable(sheet, result, valueFormat);
             WriteKpis(sheet, kpis);
@@ -62,6 +65,19 @@ internal static class DashboardRenderer
         return created;
     }
 
+    /// <summary>
+    /// The sample workbook has a "CFO note" text box where the table and chart go. Its request (make the latest
+    /// period stand out) is built into the chart, so the box is hidden, not deleted, to keep the dashboard readable.
+    /// </summary>
+    private static void HideCfoNote(Worksheet sheet)
+    {
+        foreach (Shape shape in sheet.Shapes)
+        {
+            if (shape.Name == "CFO note")
+                shape.Visible = Microsoft.Office.Core.MsoTriState.msoFalse;
+        }
+    }
+
     /// <summary>Writes title, unit line and the Period / Value / Note table. Returns the last table row.</summary>
     private static int WriteTable(Worksheet sheet, SeriesResult result, string valueFormat)
     {
@@ -74,6 +90,7 @@ internal static class DashboardRenderer
         sheet.Range["A1"].Value2 = Title(result);
         sheet.Range["A1"].Font.Bold = true;
         sheet.Range["A1"].Font.Size = 14;
+        sheet.Range["A1"].Font.Color = BrandDark;
         sheet.Range["A2"].Value2 = warnings == 0
             ? unit
             : $"{unit} · ⚠ {warnings} period(s) have missing data, see Note";
@@ -97,13 +114,21 @@ internal static class DashboardRenderer
 
         var header = sheet.Range[$"A{HeaderRow}:C{HeaderRow}"];
         header.Font.Bold = true;
+        header.Font.Color = BrandDark;
+        header.Interior.Color = BrandLight;
         header.Borders[XlBordersIndex.xlEdgeBottom].LineStyle = XlLineStyle.xlContinuous;
+        header.Borders[XlBordersIndex.xlEdgeBottom].Color = BrandDark;
 
         for (var i = 0; i < points.Count; i++)
         {
             if (!points[i].IsComplete)
                 sheet.Range[$"A{HeaderRow + 1 + i}:C{HeaderRow + 1 + i}"].Font.Color = Orange;
         }
+
+        // The latest period is the one the CFO's office discusses first.
+        var latestRow = sheet.Range[$"A{lastRow}:B{lastRow}"];
+        latestRow.Font.Bold = true;
+        latestRow.Interior.Color = BrandLight;
 
         ((Range)sheet.Columns["A"]).ColumnWidth = 10;
         ((Range)sheet.Columns["B"]).ColumnWidth = 14;
@@ -122,7 +147,7 @@ internal static class DashboardRenderer
         // Values such as "+3.4%" would be turned into numbers by Excel, so the tiles are text.
         area.NumberFormat = "@";
 
-        Tile(sheet, KpiColumns[0], $"Latest · {kpis.LatestLabel}", DashboardPane.Format(kpis.Latest, kpis.IsPercent), null);
+        Tile(sheet, KpiColumns[0], $"Latest · {kpis.LatestLabel}", DashboardPane.Format(kpis.Latest, kpis.IsPercent), BrandDark);
         ComparisonTile(sheet, KpiColumns[1], "vs", kpis.PreviousPeriod, kpis);
         ComparisonTile(sheet, KpiColumns[2], "vs", kpis.SamePeriodLastYear, kpis);
 
@@ -177,6 +202,7 @@ internal static class DashboardRenderer
         chart.HasLegend = false;
         chart.HasTitle = true;
         chart.ChartTitle.Text = Title(result);
+        chart.ChartTitle.Format.TextFrame2.TextRange.Font.Fill.ForeColor.RGB = BrandDark;
 
         var seriesCollection = (SeriesCollection)chart.SeriesCollection();
         while (seriesCollection.Count > 0)
@@ -187,37 +213,47 @@ internal static class DashboardRenderer
         series.XValues = sheet.Range[$"A{HeaderRow + 1}:A{lastRow}"];
         series.Values = sheet.Range[$"B{HeaderRow + 1}:B{lastRow}"];
 
+        // Earlier periods in the light brand colour, so the dark latest period stands out.
         if (isPercent)
         {
-            series.Format.Line.ForeColor.RGB = Blue;
-            series.MarkerBackgroundColor = Blue;
-            series.MarkerForegroundColor = Blue;
+            series.Format.Line.ForeColor.RGB = BrandDark;
+            series.Format.Line.Weight = 1.5f;
+            series.MarkerStyle = XlMarkerStyle.xlMarkerStyleCircle;
+            series.MarkerSize = 6;
+            series.MarkerBackgroundColor = BrandLight;
+            series.MarkerForegroundColor = BrandDark;
         }
         else
         {
-            series.Format.Fill.ForeColor.RGB = Blue;
+            series.Format.Fill.ForeColor.RGB = BrandLight;
+            series.Format.Line.ForeColor.RGB = BrandDark;
+            series.Format.Line.Weight = 0.75f;
         }
 
-        // Numbers on the bars only while they still fit.
+        // Numbers on every point only while they still fit; the latest period is always labelled.
         series.HasDataLabels = result.Points.Count <= 12;
         if (series.HasDataLabels)
             ((DataLabels)series.DataLabels()).NumberFormat = valueFormat;
 
-        // Periods with missing data are drawn in orange, matching the table.
         for (var i = 0; i < result.Points.Count; i++)
         {
             var point = result.Points[i];
-            if (point.IsComplete || point.Value is null) continue;
+            if (point.Value is null) continue;
 
             var chartPoint = (Point)series.Points(i + 1);
-            if (isPercent)
+            if (i == result.Points.Count - 1)
+                HighlightLatest(chartPoint, isPercent, valueFormat);
+
+            // Periods with missing data get an orange outline, matching the orange rows in the table.
+            if (!point.IsComplete)
             {
-                chartPoint.MarkerBackgroundColor = Orange;
-                chartPoint.MarkerForegroundColor = Orange;
-            }
-            else
-            {
-                chartPoint.Format.Fill.ForeColor.RGB = Orange;
+                if (isPercent)
+                    chartPoint.MarkerForegroundColor = Orange;
+                else
+                {
+                    chartPoint.Format.Line.ForeColor.RGB = Orange;
+                    chartPoint.Format.Line.Weight = 2.25f;
+                }
             }
         }
 
@@ -225,6 +261,28 @@ internal static class DashboardRenderer
         valueAxis.TickLabels.NumberFormat = valueFormat;
         valueAxis.HasTitle = true;
         valueAxis.AxisTitle.Text = isPercent ? "%" : "USD thousands";
+        valueAxis.HasMajorGridlines = true;
+        valueAxis.MajorGridlines.Format.Line.ForeColor.RGB = BrandLight;
+    }
+
+    /// <summary>The CFO's office asked for the latest period to stand out: dark brand colour and a bold label.</summary>
+    private static void HighlightLatest(Point point, bool isPercent, string valueFormat)
+    {
+        if (isPercent)
+        {
+            point.MarkerSize = 10;
+            point.MarkerBackgroundColor = BrandDark;
+            point.MarkerForegroundColor = BrandDark;
+        }
+        else
+        {
+            point.Format.Fill.ForeColor.RGB = BrandDark;
+        }
+
+        point.HasDataLabel = true;
+        point.DataLabel.NumberFormat = valueFormat;
+        point.DataLabel.Font.Bold = true;
+        point.DataLabel.Font.Color = BrandDark;
     }
 
     private static ChartObject GetOrCreateChart(Worksheet sheet)
