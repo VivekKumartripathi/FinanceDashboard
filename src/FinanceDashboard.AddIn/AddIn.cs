@@ -1,26 +1,19 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
-using System.Windows.Forms;
-using ExcelDna.Integration;
+﻿using ExcelDna.Integration;
 
-namespace FinanceDashboard.AddIn
+namespace FinanceDashboard.AddIn;
+
+/// <summary>
+/// Excel-DNA entry point. Excel calls AutoOpen when the add-in loads
+/// and AutoClose when it is removed. The ribbon is discovered by Excel-DNA automatically.
+/// </summary>
+public class AddIn : IExcelAddIn
 {
-    /// <summary>
-    /// Excel-DNA entry point. Excel calls AutoOpen when the add-in loads
-    /// and AutoClose when it is removed.
-    /// </summary>
-    public class AddIn : IExcelAddIn
+    public void AutoOpen()
     {
-        public void AutoOpen()
-        {
-            MessageBox.Show("Finance Dashboard add-in loaded.", "Finance Dashboard");
-        }
+    }
 
-        public void AutoClose()
-        {
-        }
+    public void AutoClose()
+    {
+        TaskPaneManager.Close();
     }
 }
