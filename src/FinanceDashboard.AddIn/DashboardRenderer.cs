@@ -16,6 +16,8 @@ internal static class DashboardRenderer
 {
     private const string SheetName = "Dashboard";
     private const string ChartName = "FinanceChart";
+    private const string CommentaryName = "FinanceCommentary";
+    private const float ChartWidth = 640;
     private const int HeaderRow = 4;
 
     // Excel colours are BGR: 0xBBGGRR.
@@ -43,7 +45,8 @@ internal static class DashboardRenderer
             sheet.Cells.Clear();
             WriteTable(sheet, view, layout, valueFormat);
             WriteKpis(sheet, view.Kpis, layout);
-            DrawChart(sheet, view, layout, valueFormat);
+            var chartTop = WriteCommentary(sheet, view.Commentary, layout);
+            DrawChart(sheet, view, layout, valueFormat, chartTop);
         }
         finally
         {
@@ -237,9 +240,48 @@ internal static class DashboardRenderer
             valueCell.Font.Color = c;
     }
 
-    private static void DrawChart(Worksheet sheet, DashboardView view, Layout layout, string valueFormat)
+    /// <summary>
+    /// The plain-English summary, in a text box above the chart so it reads first and is copied with it.
+    /// Returns where the chart should start.
+    /// </summary>
+    private static double WriteCommentary(Worksheet sheet, string commentary, Layout layout)
     {
-        var chart = GetOrCreateChart(sheet, layout).Chart;
+        var anchor = sheet.Range[$"{Letter(layout.TileColumn)}5"];
+        Shape? box = null;
+        foreach (Shape shape in sheet.Shapes)
+        {
+            if (shape.Name == CommentaryName)
+                box = shape;
+        }
+
+        if (box is null)
+        {
+            box = sheet.Shapes.AddTextbox(Microsoft.Office.Core.MsoTextOrientation.msoTextOrientationHorizontal,
+                (float)(double)anchor.Left, (float)(double)anchor.Top, ChartWidth, 40);
+            box.Name = CommentaryName;
+            box.Line.Visible = Microsoft.Office.Core.MsoTriState.msoFalse;
+            box.Fill.ForeColor.RGB = BrandLight;
+            box.TextFrame2.WordWrap = Microsoft.Office.Core.MsoTriState.msoTrue;
+            box.TextFrame2.AutoSize = Microsoft.Office.Core.MsoAutoSize.msoAutoSizeShapeToFitText;
+            box.TextFrame2.MarginLeft = 8;
+            box.TextFrame2.MarginRight = 8;
+        }
+
+        box.Left = (float)(double)anchor.Left;
+        box.Top = (float)(double)anchor.Top;
+        box.Width = ChartWidth;
+
+        var text = box.TextFrame2.TextRange;
+        text.Text = commentary;
+        text.Font.Size = 10;
+        text.Font.Fill.ForeColor.RGB = BrandDark;
+
+        return box.Top + box.Height + 6;
+    }
+
+    private static void DrawChart(Worksheet sheet, DashboardView view, Layout layout, string valueFormat, double top)
+    {
+        var chart = GetOrCreateChart(sheet, layout, top).Chart;
         var isPercent = view.Series.Metric.IsPercent;
         var brokenDown = view.Parts.Count > 0;
 
@@ -428,22 +470,22 @@ internal static class DashboardRenderer
         return Channel(0) | Channel(8) << 8 | Channel(16) << 16;
     }
 
-    private static ChartObject GetOrCreateChart(Worksheet sheet, Layout layout)
+    private static ChartObject GetOrCreateChart(Worksheet sheet, Layout layout, double top)
     {
-        // The chart sits below the headline tiles in rows 1-3.
-        var anchor = sheet.Range[$"{Letter(layout.TileColumn)}5"];
+        // The chart sits below the headline tiles and the commentary.
+        var left = (double)sheet.Range[$"{Letter(layout.TileColumn)}1"].Left;
         var chartObjects = (ChartObjects)sheet.ChartObjects();
         foreach (ChartObject existing in chartObjects)
         {
             if (existing.Name == ChartName)
             {
-                existing.Left = (double)anchor.Left;
-                existing.Top = (double)anchor.Top;
+                existing.Left = left;
+                existing.Top = top;
                 return existing;
             }
         }
 
-        var created = chartObjects.Add((double)anchor.Left, (double)anchor.Top, 640, 360);
+        var created = chartObjects.Add(left, top, ChartWidth, 360);
         created.Name = ChartName;
         return created;
     }

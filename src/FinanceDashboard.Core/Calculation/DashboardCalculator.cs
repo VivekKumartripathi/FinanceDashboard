@@ -19,7 +19,11 @@ public sealed record DashboardView(
     SeriesResult Series,
     KpiSummary Kpis,
     Breakdown BreakdownBy,
-    IReadOnlyList<SeriesResult> Parts);
+    IReadOnlyList<SeriesResult> Parts)
+{
+    /// <summary>A plain-English summary written by <see cref="CommentaryWriter"/>.</summary>
+    public string Commentary { get; init; } = "";
+}
 
 public static class DashboardCalculator
 {
@@ -40,11 +44,13 @@ public static class DashboardCalculator
             _ => []
         };
 
-        return new DashboardView(
+        var view = new DashboardView(
             SeriesCalculator.Calculate(data, total),
             KpiCalculator.Calculate(data, total),
             breakdownBy,
             parts.Select(p => TryCalculate(data, p)).OfType<SeriesResult>().ToList());
+
+        return view with { Commentary = CommentaryWriter.Write(data, view) };
     }
 
     /// <summary>A part with no data (e.g. a country a segment does not operate in) is left out rather than failing.</summary>
