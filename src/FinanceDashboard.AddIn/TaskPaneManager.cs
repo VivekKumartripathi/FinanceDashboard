@@ -25,11 +25,11 @@ internal static class TaskPaneManager
 
             var control = (DashboardPane)_pane.ContentControl;
             control.DataSource = () => WorkbookData.Load(Excel.ActiveWorkbook);
-            control.SeriesCalculated += (_, result) =>
+            control.SeriesCalculated += (result, kpis) =>
             {
                 try
                 {
-                    DashboardRenderer.Render(Excel.ActiveWorkbook, result);
+                    DashboardRenderer.Render(Excel.ActiveWorkbook, result, kpis);
                 }
                 catch (COMException ex)
                 {

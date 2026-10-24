@@ -51,8 +51,8 @@ public class DashboardPane : UserControl
     /// <summary>Where the data comes from; set by <see cref="TaskPaneManager"/>.</summary>
     public Func<FinancialData>? DataSource { get; set; }
 
-    /// <summary>Raised after every successful calculation, with the series to chart.</summary>
-    public event EventHandler<SeriesResult>? SeriesCalculated;
+    /// <summary>Raised after every successful calculation, with the series to chart and its headline numbers.</summary>
+    public event Action<SeriesResult, KpiSummary>? SeriesCalculated;
 
     /// <summary>Reads the workbook again and refreshes the choices, keeping the current ones where possible.</summary>
     public void Reload()
@@ -125,9 +125,11 @@ public class DashboardPane : UserControl
         if (_populating || _data is null || CurrentSelection() is not Selection selection) return;
 
         SeriesResult result;
+        KpiSummary kpis;
         try
         {
             result = SeriesCalculator.Calculate(_data, selection);
+            kpis = KpiCalculator.Calculate(_data, selection);
         }
         catch (ArgumentException ex)
         {
@@ -137,7 +139,7 @@ public class DashboardPane : UserControl
         }
 
         ShowPreview(result);
-        SeriesCalculated?.Invoke(this, result);
+        SeriesCalculated?.Invoke(result, kpis);
     }
 
     private void ShowPreview(SeriesResult result)

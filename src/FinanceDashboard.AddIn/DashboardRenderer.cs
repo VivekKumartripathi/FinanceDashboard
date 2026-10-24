@@ -1,3 +1,5 @@
+using System.Globalization;
+using FinanceDashboard.Core.Calculation;
 using FinanceDashboard.Core.Model;
 using Microsoft.Office.Interop.Excel;
 
@@ -16,8 +18,11 @@ internal static class DashboardRenderer
     // Excel colours are BGR: 0xBBGGRR.
     private const int Orange = 0x317DED;  // RGB(237, 125, 49): periods with missing data
     private const int Blue = 0xBD7244;    // RGB(68, 114, 189)
+    private const int Green = 0x3F8A2E;   // RGB(46, 138, 63): good news
+    private const int Red = 0x2C2CC0;     // RGB(192, 44, 44): bad news
+    private const int Grey = 0x707070;
 
-    public static void Render(Workbook workbook, SeriesResult result)
+    public static void Render(Workbook workbook, SeriesResult result, KpiSummary kpis)
     {
         var app = workbook.Application;
         var screenUpdating = app.ScreenUpdating;
@@ -27,6 +32,7 @@ internal static class DashboardRenderer
             var sheet = GetOrCreateSheet(workbook);
             var valueFormat = result.Metric.IsPercent ? "0.0\"%\"" : "#,##0";
             var lastRow = WriteTable(sheet, result, valueFormat);
+            WriteKpis(sheet, kpis);
             DrawChart(sheet, result, valueFormat, lastRow);
         }
         finally
@@ -105,6 +111,62 @@ internal static class DashboardRenderer
         return lastRow;
     }
 
+    /// <summary>
+    /// Three headline tiles above the chart: latest value, change on the previous period, change on last year.
+    /// A change is green when it is good news for that metric (a fall in expenses is green).
+    /// </summary>
+    private static void WriteKpis(Worksheet sheet, KpiSummary kpis)
+    {
+        var area = sheet.Range["E1:M3"];
+        area.Clear();
+        // Values such as "+3.4%" would be turned into numbers by Excel, so the tiles are text.
+        area.NumberFormat = "@";
+
+        Tile(sheet, KpiColumns[0], $"Latest · {kpis.LatestLabel}", DashboardPane.Format(kpis.Latest, kpis.IsPercent), null);
+        ComparisonTile(sheet, KpiColumns[1], "vs", kpis.PreviousPeriod, kpis);
+        ComparisonTile(sheet, KpiColumns[2], "vs", kpis.SamePeriodLastYear, kpis);
+
+        if (kpis.HasMissingData)
+        {
+            var warning = sheet.Range[$"{KpiColumns[0]}3"];
+            warning.Value2 = "⚠ Includes periods with missing data";
+            warning.Font.Color = Orange;
+        }
+    }
+
+    private static readonly string[] KpiColumns = ["E", "H", "K"];
+
+    private static void ComparisonTile(Worksheet sheet, string column, string prefix, Comparison? comparison, KpiSummary kpis)
+    {
+        if (comparison?.Change is not decimal change)
+        {
+            Tile(sheet, column, comparison is null ? "" : $"{prefix} {comparison.Label}", comparison is null ? "" : "n/a", null);
+            return;
+        }
+
+        var text = kpis.IsPercent
+            ? change.ToString("+0.0;-0.0;0.0", CultureInfo.InvariantCulture) + " pp"
+            : change.ToString("+0.0;-0.0;0.0", CultureInfo.InvariantCulture) + "%";
+
+        int? colour = change == 0m ? null : (change > 0m) == kpis.HigherIsBetter ? Green : Red;
+        Tile(sheet, column, $"{prefix} {comparison.Label}", text, colour);
+    }
+
+    private static void Tile(Worksheet sheet, string column, string label, string value, int? valueColour)
+    {
+        var labelCell = sheet.Range[$"{column}1"];
+        labelCell.Value2 = label;
+        labelCell.Font.Size = 9;
+        labelCell.Font.Color = Grey;
+
+        var valueCell = sheet.Range[$"{column}2"];
+        valueCell.Value2 = value;
+        valueCell.Font.Size = 16;
+        valueCell.Font.Bold = true;
+        if (valueColour is int c)
+            valueCell.Font.Color = c;
+    }
+
     private static void DrawChart(Worksheet sheet, SeriesResult result, string valueFormat, int lastRow)
     {
         var chart = GetOrCreateChart(sheet).Chart;
@@ -167,14 +229,19 @@ internal static class DashboardRenderer
 
     private static ChartObject GetOrCreateChart(Worksheet sheet)
     {
+        // The chart sits below the headline tiles in rows 1-3.
+        var anchor = sheet.Range["E5"];
         var chartObjects = (ChartObjects)sheet.ChartObjects();
         foreach (ChartObject existing in chartObjects)
         {
             if (existing.Name == ChartName)
+            {
+                existing.Left = (double)anchor.Left;
+                existing.Top = (double)anchor.Top;
                 return existing;
+            }
         }
 
-        var anchor = sheet.Range["E1"];
         var created = chartObjects.Add((double)anchor.Left, (double)anchor.Top, 640, 360);
         created.Name = ChartName;
         return created;
