@@ -169,6 +169,8 @@ public class DashboardPane : UserControl
         decimal v => v.ToString("#,##0", CultureInfo.InvariantCulture)
     };
 
+    internal void ShowError(string message) => ShowStatus(message, isError: true);
+
     private void ShowStatus(string message, bool isError)
     {
         _status.Text = message;
@@ -239,5 +241,22 @@ public class DashboardPane : UserControl
         public string Value { get; } = value;
 
         public override string ToString() => text;
+    }
+
+    private void InitializeComponent()
+    {
+            this.SuspendLayout();
+            // 
+            // DashboardPane
+            // 
+            this.Name = "DashboardPane";
+            this.Load += new System.EventHandler(this.DashboardPane_Load);
+            this.ResumeLayout(false);
+
+    }
+
+    private void DashboardPane_Load(object sender, EventArgs e)
+    {
+
     }
 }
