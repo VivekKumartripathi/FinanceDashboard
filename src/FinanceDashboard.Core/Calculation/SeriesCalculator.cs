@@ -5,6 +5,11 @@ namespace FinanceDashboard.Core.Calculation;
 /// <summary>
 /// Turns a <see cref="Selection"/> into the series to chart.
 /// </summary>
+/// <remarks>
+/// Blank cells are never treated as zero. Amounts are calculated from the cells that do have values and the
+/// point is flagged, quoting the sheet's note for that row. Ratios leave out any month that is blank on either
+/// side, so a missing month of expenses cannot make cost-to-income look better than it is.
+/// </remarks>
 public static class SeriesCalculator
 {
     public static SeriesResult Calculate(FinancialData data, Selection selection)
@@ -27,11 +32,16 @@ public static class SeriesCalculator
 
     private static List<SeriesPoint> AmountPoints(FinancialData data, Selection selection, MetricInfo metric, IReadOnlyList<Bucket> buckets)
     {
-        var totals = MonthlyTotals(Filter(data, metric.Code, selection.Segment, selection.Country), data.Periods.Count);
+        var rows = Filter(data, metric.Code, selection.Segment, selection.Country);
+        var totals = MonthlyTotals(rows, data.Periods.Count);
         var aggregation = AggregationRules.For(metric.Code);
 
         return buckets
-            .Select(b => new SeriesPoint(b.Label, Aggregate(totals, b, aggregation), b.Notes))
+            .Select(b =>
+            {
+                var notes = b.Notes.Concat(BlankNotes(data, rows, MonthsUsed(b, aggregation), "")).ToList();
+                return new SeriesPoint(b.Label, Aggregate(totals, b, aggregation), notes);
+            })
             .ToList();
     }
 
@@ -52,16 +62,14 @@ public static class SeriesCalculator
 
         IReadOnlyList<string> segments = selection.Segment == Selection.All ? data.Segments : [selection.Segment];
 
-        // Monthly numerator and denominator totals for each segment that has both in the chosen country.
-        var perSegment = new List<(decimal?[] Numerator, decimal?[] Denominator)>();
+        // Numerator and denominator rows for each segment that has both in the chosen country.
+        var perSegment = new List<(List<FinancialRecord> Numerator, List<FinancialRecord> Denominator)>();
         foreach (var segment in segments)
         {
             var numeratorRows = Rows(data, numeratorCode, segment, selection.Country);
             var denominatorRows = Rows(data, denominatorCode, segment, selection.Country);
-            if (numeratorRows.Count == 0 || denominatorRows.Count == 0)
-                continue;
-
-            perSegment.Add((MonthlyTotals(numeratorRows, data.Periods.Count), MonthlyTotals(denominatorRows, data.Periods.Count)));
+            if (numeratorRows.Count > 0 && denominatorRows.Count > 0)
+                perSegment.Add((numeratorRows, denominatorRows));
         }
 
         if (perSegment.Count == 0)
@@ -71,14 +79,25 @@ public static class SeriesCalculator
         return buckets
             .Select(b =>
             {
-                var ratios = perSegment
-                    .Select(s => Ratio(Aggregate(s.Numerator, b, Aggregation.Sum), Aggregate(s.Denominator, b, Aggregation.Sum)))
-                    .Where(r => r.HasValue)
-                    .Select(r => r!.Value)
-                    .ToList();
+                var notes = new List<string>(b.Notes);
+                var ratios = new List<decimal>();
+
+                foreach (var (numeratorRows, denominatorRows) in perSegment)
+                {
+                    var sourceRows = numeratorRows.Concat(denominatorRows).ToList();
+
+                    // Only months where every source cell has a value, so both sides cover the same months.
+                    var used = b.MonthIndexes.Where(i => sourceRows.All(r => r.Values[i].HasValue)).ToList();
+                    var skipped = b.MonthIndexes.Except(used);
+                    notes.AddRange(BlankNotes(data, sourceRows, skipped, "; that month is left out of the ratio"));
+
+                    var ratio = Ratio(SumOver(numeratorRows, used), SumOver(denominatorRows, used));
+                    if (ratio.HasValue)
+                        ratios.Add(ratio.Value);
+                }
 
                 decimal? value = ratios.Count > 0 ? ratios.Average() : null;
-                return new SeriesPoint(b.Label, value, b.Notes);
+                return new SeriesPoint(b.Label, value, notes);
             })
             .ToList();
     }
@@ -86,6 +105,10 @@ public static class SeriesCalculator
     /// <summary>Numerator / denominator as a percent; null when either is missing or the denominator is not positive.</summary>
     private static decimal? Ratio(decimal? numerator, decimal? denominator) =>
         numerator is decimal n && denominator is decimal d && d > 0 ? n / d * 100m : null;
+
+    /// <summary>Sum of the rows over the given months; null when there are no months.</summary>
+    private static decimal? SumOver(IReadOnlyList<FinancialRecord> rows, IReadOnlyList<int> months) =>
+        months.Count == 0 ? null : rows.Sum(r => months.Sum(i => r.Values[i] ?? 0m));
 
     /// <summary>
     /// One chart period: its label and the month indexes (into <see cref="FinancialData.Periods"/>) it covers.
@@ -155,17 +178,29 @@ public static class SeriesCalculator
     /// </summary>
     internal static decimal? Aggregate(decimal?[] monthlyTotals, Bucket bucket, Aggregation aggregation)
     {
-        if (aggregation == Aggregation.PeriodEnd)
-            return monthlyTotals[bucket.MonthIndexes[bucket.MonthIndexes.Count - 1]];
-
-        decimal? sum = null;
-        foreach (var i in bucket.MonthIndexes)
+        decimal? result = null;
+        foreach (var i in MonthsUsed(bucket, aggregation))
         {
             if (monthlyTotals[i] is decimal value)
-                sum = (sum ?? 0m) + value;
+                result = (result ?? 0m) + value;
         }
-        return sum;
+        return result;
     }
+
+    /// <summary>The months a bucket's value is built from: all of them for a sum, only the last for a balance.</summary>
+    private static IReadOnlyList<int> MonthsUsed(Bucket bucket, Aggregation aggregation) =>
+        aggregation == Aggregation.PeriodEnd
+            ? [bucket.MonthIndexes[bucket.MonthIndexes.Count - 1]]
+            : bucket.MonthIndexes;
+
+    /// <summary>One note per blank cell among the rows and months, quoting the row's Notes text when there is one.</summary>
+    private static IEnumerable<string> BlankNotes(FinancialData data, IEnumerable<FinancialRecord> rows, IEnumerable<int> months, string suffix) =>
+        from i in months
+        from r in rows
+        where !r.Values[i].HasValue
+        select $"{r.Segment} / {r.Country} / {r.Metric} is blank for {data.Periods[i].MonthLabel}"
+             + (r.Note is null ? "" : $" ({r.Note})")
+             + suffix + ".";
 
     private static bool Matches(string value, string wanted) =>
         wanted == Selection.All || string.Equals(value, wanted, StringComparison.OrdinalIgnoreCase);
